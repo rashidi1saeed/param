@@ -117,7 +117,7 @@ def find_parent_cpu_op(kineto_gpu_event, kineto_et_events, kineto_ac2g_s_events,
             ", external_id: " + str(kineto_gpu_event["args"]["External id"]))
 
     # TODO: In some cases, condition 2 is not met. Seems to be a problem in input from older Kineto.  
-    #assert parent_cpu_op and parent_cpu_op["ts"]+parent_cpu_op["dur"]>kineto_gpu_event["ts"]
+    #assert parent_cpu_op and parent_cpu_op["ts"] + parent_cpu_op["dur"] > kineto_gpu_event["ts"]
     return parent_cpu_op
 
 # Extract operator info from raw traces
@@ -211,14 +211,13 @@ def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
     # otherwise find the iteration in kineto trace with the closest #ops to ET (usually ET has 3 additional annotation ops for processes/threads)
     if kineto_et_segs:
         kineto_et_events = find_closest_segment(kineto_et_segs, len(et_nodes) - 3)
+
+    logger.info(f"Number of original cpu ops in kineto trace: {len(kineto_et_events)}") 
+    logger.info(f"Number of original gpu ops in kineto trace: {len(kineto_gpu_events)}")
     
     if average_iteration_latency > 0:
-        logger.info(f"Number of original cpu ops in kineto trace: {len(kineto_et_events)}") 
-        logger.info(f"Number of original gpu ops in kineto trace: {len(kineto_gpu_events)}")
         logger.info(f"Average iteration latency: {average_iteration_latency}")
-    else:
-        logger.info(f"Number of original cpu ops in kineto trace: {len(kineto_et_events)}, Number of original gpu ops in kineto trace: {len(kineto_gpu_events)}")
-
+    
     return et_nodes, kineto_et_events, kineto_ac2g_s_events, kineto_ac2g_f_events, kineto_cpu_launch_kernel_events, kineto_gpu_events
 
 def exist(name,kineto_et_events,i):
@@ -296,7 +295,8 @@ def exact_match(kineto_et_events,kineto_ac2g_s_events,kineto_ac2g_f_events,kinet
     if len(kineto_et_events) == len(et_nodes):
         for i in range(len(et_nodes)):
             et_node = et_nodes[i]
-            name_exist, kineto_et_event = exist(et_node.name,kineto_et_events,i)
+
+            name_exist, kineto_et_event = exist(et_node.name, kineto_et_events, i)
 
             if (name_exist or
                 ("iteration#" in et_node.name and "iteration#" in kineto_et_event["name"]) or
@@ -372,6 +372,7 @@ def approximate_match(kineto_et_events, et_nodes):
                 kineto_nodes[-1].children.append(tmp)
                 kineto_nodes.append(tmp)
             else:
+
                 while len(kineto_nodes) > 0 and kineto_nodes[-1].end <= event["ts"]:
                     kineto_nodes.pop()
                 tmp = Kineto_node(
@@ -495,7 +496,6 @@ if __name__ == "__main__":
     if et_enhanced_duration:
         assigned_ids={}
         total_assigned_ids=[]
-
         with open(args.et_file, "r") as f:
             et = json.load(f)
             for node in et["nodes"]:
