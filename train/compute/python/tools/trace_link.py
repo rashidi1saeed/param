@@ -78,20 +78,55 @@ def find_closest_segment(segs, target_length):
     return closest_seg
 
 
+# Find parent CPU kernel for a given GPU kernel.
+def find_parent_cpu_op(kineto_gpu_event, kineto_et_events, kineto_ac2g_s_events, kineto_ac2g_f_events, kineto_cpu_launch_kernel_events):
+    ts = -1
+    method = ""
+
+    # Find a cpu launch kernel which has the same external id with the gpu kernel.
+    if kineto_gpu_event["args"]["External id"] in kineto_cpu_launch_kernel_events.keys():
+        ts = kineto_cpu_launch_kernel_events[kineto_gpu_event["args"]["External id"]]["ts"] + \
+             kineto_cpu_launch_kernel_events[kineto_gpu_event["args"]["External id"]]["dur"]
+        method = "cuda launch"
+    elif kineto_gpu_event["args"]["External id"] in kineto_ac2g_s_events.keys():
+        ts = kineto_ac2g_s_events[kineto_gpu_event["args"]["External id"]]["ts"]
+        method = "ac2g_s"
+    elif kineto_gpu_event["args"]["External id"] in kineto_ac2g_f_events.keys():
+        ts = kineto_ac2g_f_events[kineto_gpu_event["args"]["External id"]]["ts"]
+        method = "ac2g_f"
+    assert ts != -1
+
+    kineto_gpu_event["ts"] = ts
+    closest_start = 0
+    parent_cpu_op = {}
+
+    # Find a parent cpu launch kernel based on two conditions.
+    # Condition 1: Parent kerenl should be the kernel has the closest start time to the gpu kernel.
+    # Condition 2: Parent kernel should be long enough to cover the gpu kernel.
+    for event in kineto_et_events:
+        if "cat" in event and \
+            event["ts"] < kineto_gpu_event["ts"] and \
+            (event["ts"] + event["dur"]) > kineto_gpu_event["ts"] and \
+            event["ts"] > closest_start:
+
+            closest_start = event["ts"]
+            parent_cpu_op = event
+
+    if not parent_cpu_op:
+        print("Warning! the parent cpu_op for the following gpu_op is not found and hence it is discarded. gpu_op name: " + str(kineto_gpu_event["name"]) +
+            ", ts: " + str(kineto_gpu_event["ts"]) +
+            ", external_id: " + str(kineto_gpu_event["args"]["External id"]))
+
+    #TODO: In some cases, condition 2 is not met. Seems to be a problem in input from older Kineto.
+    #assert parent_cpu_op and parent_cpu_op["ts"] + parent_cpu_op["dur"] > kineto_gpu_event["ts"]
+    return parent_cpu_op
+
+
 # Extract operator info from raw traces
 def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
     et = load_execution_trace_file(et_file)
-    et.set_iterations(annotation)
 
-    if et.iterations() > 1:
-        logger.info(f"Execution trace has {et.iterations()} > 1 iterations.")
-        # get an iteration further down the line
-        trim_iter = min(2, et.iterations() - 1)
-        et_ = et.clone_one_iteration(trim_iter)
-    else:
-        et_ = et
-
-    nodes = et_.get_nodes()
+    nodes = et.get_nodes()
 
     # Root node of execution trace is 1-based
     et_nodes = collect_nodes(nodes[1])
@@ -105,9 +140,46 @@ def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
     kineto_et_events = [
         event
         for event in sorted_kineto_trace_events
-        if "cat" in event
+        if "cat" in event and "ProfilerStep" not in event["name"]
         and (event["cat"] == "cpu_op" or event["cat"] == "user_annotation")
     ]
+
+    kineto_ac2g_s_events = {
+        event["id"]:event
+        for event in sorted_kineto_trace_events
+        if "cat" in event and "ProfilerStep" not in event["name"]
+        and (event["cat"] == "ac2g" and event["ph"] == "s")
+    }
+
+    kineto_ac2g_f_events = {
+        event["id"]:event
+        for event in sorted_kineto_trace_events
+        if "cat" in event and "ProfilerStep" not in event["name"]
+        and (event["cat"] == "ac2g" and event["ph"] == "f")
+    }
+
+    kineto_cpu_launch_kernel_events = {
+        event["args"]["External id"]:event
+        for event in sorted_kineto_trace_events
+        if "cat" in event
+        and (event["cat"] == "cuda_runtime" and (event["name"] == "cudaLaunchKernel" or event["name"] == "cudaMemcpyAsync"))
+    }
+
+    kineto_gpu_events = [
+        event
+        for event in sorted_kineto_trace_events
+        if "cat" in event and "ProfilerStep" not in event["name"]
+        and (event["cat"] == "kernel" or event["cat"] == "gpu_memcpy")
+    ]
+
+    kineto_iteration_latencies = [
+        iteration["dur"]
+        for iteration in sorted_kineto_trace_events
+        if "ProfilerStep" in iteration["name"]
+    ]
+    average_iteration_latency = 0
+    if len(kineto_iteration_latencies) > 0:
+        average_iteration_latency = sum(kineto_iteration_latencies) / len(kineto_iteration_latencies)
 
     kineto_et_segs = []
     kineto_et_seg = []
@@ -129,8 +201,6 @@ def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
         else:
             kineto_et_seg.append(event)
 
-    logger.info(f"Kineto trace has {len(kineto_et_segs)} segments")
-
     # # Assume that an iteration starts with the specified annotation
     # for event in kineto_et_events:
     #     if annotation in event['name']:
@@ -143,21 +213,29 @@ def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
     # otherwise find the iteration in kineto trace with the closest #ops to ET (usually ET has 3 additional annotation ops for processes/threads)
     if kineto_et_segs:
         kineto_et_events = find_closest_segment(kineto_et_segs, len(et_nodes) - 3)
-    else:
-        logger.warning(
-            f"Could not find annotation {annotation} in kineto file"
-            " using the whole file, processing could be very slow!!"
-        )
-        if len(kineto_et_events) > 1000:
-            logger.error(f"Kineto has {len(kineto_et_events)} > 1000 events. exiting")
-            sys.exit(-1)
 
-    logger.info(f"Number of original ops in kineto trace: {len(kineto_et_events)}")
+    logger.info(f"Number of original cpu ops in kineto trace: {len(kineto_et_events)}")
+    logger.info(f"Number of original gpu ops in kineto trace: {len(kineto_gpu_events)}")
 
-    return et_nodes, kineto_et_events
+    if average_iteration_latency > 0:
+        logger.info(f"Average iteration latency: {average_iteration_latency}")
+
+    return et_nodes, kineto_et_events, kineto_ac2g_s_events, kineto_ac2g_f_events, kineto_cpu_launch_kernel_events, kineto_gpu_events
 
 
-def exact_match(kineto_et_events, et_nodes):
+def exist(name, kineto_et_events, i):
+    MAX_DISTANCE = 0
+    distance = 0
+    while distance <= MAX_DISTANCE and distance + i < len(kineto_et_events) or i >= distance:
+        if distance + i < len(kineto_et_events) and name == kineto_et_events[distance + i]["name"]:
+            return True, kineto_et_events[distance + i]
+        elif i >= distance and name == kineto_et_events[i-distance]["name"]:
+            return True, kineto_et_events[i - distance]
+        distance += 1
+    return False, kineto_et_events[i]
+
+
+def exact_match(kineto_et_events, kineto_ac2g_s_events, kineto_ac2g_f_events, kineto_cpu_launch_kernel_events, kineto_gpu_events, et_nodes):
     # Since kineto trace is missing the annotations for processes/threads, we add them back to match with ET
     kineto_event_per_thread = {}
 
@@ -199,33 +277,56 @@ def exact_match(kineto_et_events, et_nodes):
 
     # Duration of ET nodes
     et_enhanced_duration = {}
+    # Timestamp of ET nodes
+    et_enhanced_timestamp = {}
+
+    et_gpu_kernels_per_cpu_event_id = {}
+    kineto_gpu_kernels_per_cpu_event_idx = {}
+
+    for gpu_event in kineto_gpu_events:
+        parent_cpu_event = find_parent_cpu_op(gpu_event, kineto_et_events, kineto_ac2g_s_events, kineto_ac2g_f_events, kineto_cpu_launch_kernel_events)
+
+        if not parent_cpu_event:
+            continue
+
+        assert "Ev Idx" in parent_cpu_event["args"]
+        if parent_cpu_event["args"]["Ev Idx"] not in kineto_gpu_kernels_per_cpu_event_idx:
+            kineto_gpu_kernels_per_cpu_event_idx[parent_cpu_event["args"]["Ev Idx"]]=[gpu_event]
+        else:
+            kineto_gpu_kernels_per_cpu_event_idx[parent_cpu_event["args"]["Ev Idx"]].append(gpu_event)
 
     # Link kineto trace and execution trace
     if len(kineto_et_events) == len(et_nodes):
         for i in range(len(et_nodes)):
             et_node = et_nodes[i]
-            kineto_et_event = kineto_et_events[i]
-            if (
-                et_node.name == kineto_et_event["name"]
-                or (
-                    "iteration#" in et_node.name
-                    and "iteration#" in kineto_et_event["name"]
-                )
-                or et_node.name.replace("execution_graph", "execution_trace")
-                == kineto_et_event["name"]
-            ):
+
+            name_exist, kineto_et_event = exist(et_node.name, kineto_et_events, i)
+
+            if (name_exist or
+                ("iteration#" in et_node.name and "iteration#" in kineto_et_event["name"]) or
+                et_node.name.replace("execution_graph", "execution_trace") == kineto_et_event["name"]):
+
                 et_enhanced_duration[et_node.id] = kineto_et_event["dur"]
+                et_enhanced_timestamp[et_node.id] = kineto_et_event["ts"]
+
+                if "args" in kineto_et_event and "Ev Idx" in kineto_et_event["args"] and kineto_et_event["args"]["Ev Idx"] in kineto_gpu_kernels_per_cpu_event_idx:
+                    et_gpu_kernels_per_cpu_event_id[et_node.id] = kineto_gpu_kernels_per_cpu_event_idx[kineto_et_event["args"]["Ev Idx"]]
             else:
-                logger.info("Op mismatch between kineto and execution trace:")
+                logger.info("Op mismatch between kineto and execution trace ( et size = "+str(len(et_nodes))+", kineto size: "+str(len(kineto_et_events))+" ):")
                 logger.info(
                     f'Op index: {i}, kineto op name: {kineto_et_event["name"]}, kineto op timestamp: {kineto_et_event["ts"]}, '
                     f"execution trace op name: {et_node.name}, execution trace op id: {et_node.id}"
                 )
+                for i in range(len(kineto_et_events)):
+                    kineto_et_event = kineto_et_events[i]
+                    et_node = et_nodes[i]
+                    logger.info( "Index: "+str(i)+", et name: " + et_node.name+ ", kineto name: " + kineto_et_event["name"])
+
                 exit(0)
     else:
-        logger.info("Ops count mismatch between kineto and execution trace")
+        logger.info("Ops count mismatch between kineto and execution trace ( et size = "+str(len(et_nodes))+", kineto size: "+str(len(kineto_et_events))+" )")
 
-    return et_enhanced_duration
+    return et_enhanced_duration, et_enhanced_timestamp, et_gpu_kernels_per_cpu_event_id
 
 
 def approximate_match(kineto_et_events, et_nodes):
@@ -235,15 +336,15 @@ def approximate_match(kineto_et_events, et_nodes):
     # Mapping node id to the corresponding node
     kineto_nodes_mapping = {}
 
-    start_time = kineto_et_events[0]["ts"]
-    end_time = -1
-
     for event in kineto_et_events:
         if event["tid"] not in kineto_event_per_thread:
             kineto_event_per_thread[event["tid"]] = []
         kineto_event_per_thread[event["tid"]].append(event)
-        end_time = max(end_time, event["ts"] + event["dur"])
 
+    start_time = kineto_et_events[0]["ts"]
+    end_time = -1
+    for event in kineto_et_events:
+        end_time = max(end_time, event["ts"] + event["dur"])
     process_node = Kineto_node(
         execution_trace_process_annotation, start_time, end_time, 0
     )
@@ -258,9 +359,6 @@ def approximate_match(kineto_et_events, et_nodes):
 
         thread_node = Kineto_node(
             execution_trace_thread_annotation, start_time, end_time, cnt
-        )
-        print(
-            f"thread {thread} thread_node start,end = {thread_node.start}, {thread_node.end}"
         )
         kineto_nodes_mapping[cnt] = thread_node
         cnt += 1
@@ -278,14 +376,15 @@ def approximate_match(kineto_et_events, et_nodes):
                 kineto_nodes[-1].children.append(tmp)
                 kineto_nodes.append(tmp)
             else:
-                while kineto_nodes[-1].end <= event["ts"] and len(kineto_nodes) > 1:
+                while len(kineto_nodes) > 0 and kineto_nodes[-1].end <= event["ts"]:
                     kineto_nodes.pop()
                 tmp = Kineto_node(
                     event["name"], event["ts"], event["ts"] + event["dur"], cnt
                 )
                 kineto_nodes_mapping[cnt] = tmp
                 cnt += 1
-                kineto_nodes[-1].children.append(tmp)
+                if len(kineto_nodes) > 0:
+                    kineto_nodes[-1].children.append(tmp)
                 kineto_nodes.append(tmp)
 
     # Max call stack depth when building the tree, the deeper the more accurate but takes longer time
@@ -343,6 +442,18 @@ def approximate_match(kineto_et_events, et_nodes):
     return et_enhanced_duration
 
 
+def assign_ids(total_assigned_ids, assigned_ids, id):
+    orig_id = id
+    while True:
+        if id in total_assigned_ids:
+            id += 1
+        else:
+            total_assigned_ids.append(id)
+            if orig_id not in assigned_ids.keys():
+                assigned_ids[orig_id] = id
+            return id
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -373,23 +484,55 @@ if __name__ == "__main__":
 
     logger.setLevel(args.log_level)
 
-    et_nodes, kineto_et_events = trace_analysis(
-        args.et_file, args.kineto_file, args.annotation
-    )
+    et_gpu_kernels_per_cpu_event_id={}
+    et_nodes, kineto_et_events, kineto_ac2g_s_events, kineto_ac2g_f_events, kineto_cpu_launch_kernel_events, kineto_gpu_events = \
+        trace_analysis(args.et_file, args.kineto_file, args.annotation)
 
     if args.exact_match:
-        et_enhanced_duration = exact_match(kineto_et_events, et_nodes)
+        et_enhanced_duration,et_enhanced_timestamp, et_gpu_kernels_per_cpu_event_id = \
+            exact_match(kineto_et_events, kineto_ac2g_s_events, kineto_ac2g_f_events, kineto_cpu_launch_kernel_events, kineto_gpu_events, et_nodes)
     else:
-        et_enhanced_duration = approximate_match(kineto_et_events, et_nodes)
+        logger.info("This script works only with the exact match mode, please add the --exact-match flag to your script and run it again")
+        assert False
 
     # If linking works, add duration time to each ET node and dump as ET_plus
     if et_enhanced_duration:
-        et = read_dictionary_from_json_file(args.et_file)
-        for node in et["nodes"]:
-            if node["id"] in et_enhanced_duration:
-                node["dur"] = et_enhanced_duration[node["id"]]
+        assigned_ids = {}
+        total_assigned_ids = []
+        with open(args.et_file, "r") as f:
+            et = json.load(f)
+            for node in et["nodes"]:
+                if "cat" in node.keys():
+                    break
+                node_id = node["id"]
+                node["id"] = assign_ids(total_assigned_ids, assigned_ids, node_id)
+
+                if node_id in et_enhanced_duration:
+                    node["dur"] = et_enhanced_duration[node_id]
+                    node["ts"] = et_enhanced_timestamp[node_id]
+
+                if node_id in et_gpu_kernels_per_cpu_event_id:
+                    et_gpu_kernels_per_cpu_event_id[node_id] = sorted(et_gpu_kernels_per_cpu_event_id[node_id], key=lambda kv: kv["ts"])
+                    gpu_nodes = et_gpu_kernels_per_cpu_event_id[node_id]
+
+                    # Assign the same information to gpu_node as its parent cpu_node
+                    for gpu_node in gpu_nodes:
+                        gpu_node["parent"] = node["id"]
+                        gpu_node["id"] = assign_ids(total_assigned_ids, assigned_ids, node_id)
+                        gpu_node["inputs"] = node["inputs"]
+                        gpu_node["input_shapes"] = node["input_shapes"]
+                        gpu_node["input_types"] = node["input_types"]
+                        gpu_node["outputs"] = node["outputs"]
+                        gpu_node["output_shapes"] = node["output_shapes"]
+                        gpu_node["output_types"] = node["output_types"]
+                        et["nodes"].append(gpu_node)
+                    et_gpu_kernels_per_cpu_event_id.pop(node_id)
+
+            for node in et["nodes"]:
+                if "cat" not in node.keys():
+                    node["parent"] = assigned_ids[node["parent"]]
 
         et_plus_file = args.et_file.replace(".json", "_plus.json")
-        logger.info(f"Enhanced execution trace dumped to {et_plus_file}")
-
-        write_dictionary_to_json_file(et_plus_file, et)
+        logger.info(f"Enhanced execution trace dumped to {et_plus_file}.")
+        with open(et_plus_file, "w") as f:
+            json.dump(et, f, indent = 4)
