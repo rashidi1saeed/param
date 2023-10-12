@@ -4,14 +4,9 @@ import sys
 
 import networkx as nx
 from networkx.algorithms import isomorphism
-from param_bench.train.compute.python.tools.execution_trace import (
-    EXECUTION_TRACE_PROCESS_ANNOTATION,
-    EXECUTION_TRACE_THREAD_ANNOTATION,
-)
-from param_bench.train.compute.python.tools.utility import (
+from utility import (
     load_execution_trace_file,
     read_dictionary_from_json_file,
-    write_dictionary_to_json_file,
 )
 
 
@@ -19,6 +14,9 @@ from param_bench.train.compute.python.tools.utility import (
 sys.setrecursionlimit(10**6)
 
 logger = logging.getLogger()
+
+execution_trace_process_annotation = "[pytorch|profiler|execution_trace|process]"
+execution_trace_thread_annotation = "[pytorch|profiler|execution_trace|thread]"
 
 
 # Add and sort ET nodes from the execution trace
@@ -179,7 +177,7 @@ def exact_match(kineto_et_events, et_nodes):
         process_end_time = max(process_end_time, event["ts"] + event["dur"])
 
     process_event = {
-        "name": EXECUTION_TRACE_PROCESS_ANNOTATION,
+        "name": execution_trace_process_annotation,
         "ts": kineto_et_events[0]["ts"],
         "dur": process_end_time - kineto_et_events[0]["ts"],
     }
@@ -192,7 +190,7 @@ def exact_match(kineto_et_events, et_nodes):
 
     for index, (tid, thread_info) in enumerate(sorted_threads.items()):
         thread_event = {
-            "name": EXECUTION_TRACE_THREAD_ANNOTATION,
+            "name": execution_trace_thread_annotation,
             "ts": thread_info["ts"],
             "dur": thread_info["end_ts"] - thread_info["ts"],
         }
@@ -247,7 +245,7 @@ def approximate_match(kineto_et_events, et_nodes):
         end_time = max(end_time, event["ts"] + event["dur"])
 
     process_node = Kineto_node(
-        EXECUTION_TRACE_PROCESS_ANNOTATION, start_time, end_time, 0
+        execution_trace_process_annotation, start_time, end_time, 0
     )
     kineto_nodes_mapping[0] = process_node
 
@@ -259,7 +257,7 @@ def approximate_match(kineto_et_events, et_nodes):
             end_time = max(end_time, event["ts"] + event["dur"])
 
         thread_node = Kineto_node(
-            EXECUTION_TRACE_THREAD_ANNOTATION, start_time, end_time, cnt
+            execution_trace_thread_annotation, start_time, end_time, cnt
         )
         print(
             f"thread {thread} thread_node start,end = {thread_node.start}, {thread_node.end}"
