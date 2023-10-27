@@ -2,6 +2,7 @@ import json
 import logging
 import sys
 import os
+import copy
 
 import networkx as nx
 from networkx.algorithms import isomorphism
@@ -257,8 +258,9 @@ def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
     # The choice below normally does not matter for approximate match since we rely on the isomorphism of
     # the graphs, but for exact match we will use the execution order and then we should be careful
 
-    # Assume that an iteration ends with the specified annotation
+    # Assume that an iteration starts/ends with the specified annotation
     end_time = -1
+    add_last_chunk=False
     for op in kineto_et_ops:
         if end_time > 0 and get_timestamp_field(op) >= end_time:
             kineto_et_segs.append(kineto_et_seg)
@@ -268,9 +270,11 @@ def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
         if annotation in get_name_field(op):
             kineto_et_seg.append(op)
             end_time = get_timestamp_field(op) + get_duration_field(op)
+            add_last_chunk=True
         else:
             kineto_et_seg.append(op)
-
+    if add_last_chunk:
+        kineto_et_segs.append(kineto_et_seg)
     logger.info(f"Kineto trace has {len(kineto_et_segs)} segments")
 
     # In case of kineto only contains one iteration or the provided annotation is wrong, use the whole trace directly.
@@ -331,6 +335,38 @@ def op_exists(name, kineto_et_ops, i):
 
     return False, kineto_et_ops[i]  # Return False and the op at index i if the name is not found.
 
+def find_op_shift(et_nodes,kineto_et_ops):
+    """
+    This function checks to see if the operations in Pytorch_et (et_nodes) and Kineto (kineto_et_ops) are shifter by
+    a constant number. Sometimes it is possible that the operation in index i of et_nodes is mapped to index i+shift in
+    kineto_et_ops. The objective of this function is to detect the shift value. To do this, this function picks N
+    (max_pattern_length) number of consecutive ops is et_nodes, and compare it with N consecutive ops in kineto_et_ops.
+    The maximum shift amount to check is determined by the max_shift_to_check variable.
+
+    Parameters:
+    - et_nodes: A list of Pytorch_et ops.
+    - kineto_et_ops: A list of kineto ops.
+
+    Returns:
+    - The amount of shift between et_nodes and kineto_et_ops
+    """
+    # Number of consecutive ops to check
+    max_pattern_length=10
+    # Number of consecutive ops to check
+    max_shift_to_check=1000
+    # We pick the N consecutive ops starting from the index 5 in Pytorch_et
+    start_index=5
+    for shift in range(max_shift_to_check):
+        pattern_match=True
+        for index in range(max_pattern_length):
+            if start_index+index>=len(et_nodes) or start_index+index+shift>=len(kineto_et_ops):
+                return 0
+            if et_nodes[start_index+index].name!=kineto_et_ops[start_index+index+shift]["name"]:
+                pattern_match=False
+                break
+        if pattern_match:
+            return shift
+    return 0
 
 def exact_match(kineto_et_ops, kineto_ac2g_s_ops, kineto_ac2g_f_ops,
                 kineto_cpu_launcher_ops, kineto_gpu_ops, et_nodes):
@@ -394,13 +430,15 @@ def exact_match(kineto_et_ops, kineto_ac2g_s_ops, kineto_ac2g_f_ops,
             kineto_gpu_ops_per_cpu_op_idx[parent_cpu_op["args"]["Ev Idx"]]=[gpu_op]
         else:
             kineto_gpu_ops_per_cpu_op_idx[parent_cpu_op["args"]["Ev Idx"]].append(gpu_op)
-
+    shift=find_op_shift(et_nodes,kineto_et_ops)
+    if shift:
+        logger.info("shift found between et_nodes, and kineto_et_events. Shift amount: "+str(shift))
     # Link kineto trace and execution trace
     if len(kineto_et_ops) == len(et_nodes):
         for i in range(len(et_nodes)):
             et_node = et_nodes[i]
 
-            name_exist, kineto_et_op = op_exists(et_node.name, kineto_et_ops, i)
+            name_exist, kineto_et_op = op_exists(et_node.name, kineto_et_ops, i+shift)
 
             if (name_exist or
                 ("iteration#" in et_node.name and "iteration#" in get_name_field(kineto_et_op)) or
@@ -562,10 +600,10 @@ def assign_et_ids(total_assigned_ids, assigned_ids, id):
     """
     orig_id = id
     while True:
-        if id in total_assigned_ids:
+        if id in total_assigned_ids.keys():
             id += 1
         else:
-            total_assigned_ids.append(id)
+            total_assigned_ids[id]=True
             if orig_id not in assigned_ids.keys():
                 assigned_ids[orig_id] = id
             return id
@@ -577,19 +615,22 @@ def update_gpu_nodes(et_gpu_ops_per_cpu_op_id, node, total_assigned_ids,
     and assign unique IDs.
     """
     gpu_nodes = sorted(et_gpu_ops_per_cpu_op_id[orig_node_id], key=lambda kv: get_timestamp_field(kv))
+    new_gpu_nodes=[]
 
     # Assign the gpu_node's parent with cpu_node
     for gpu_node in gpu_nodes:
-        gpu_node["parent"] = node["id"]
-        gpu_node["id"] = assign_et_ids(total_assigned_ids,
+        copy_gpu_node=copy.deepcopy(gpu_node)
+        copy_gpu_node["parent"] = node["id"]
+        copy_gpu_node["id"] = assign_et_ids(total_assigned_ids,
                                        assigned_ids, orig_node_id)
-        gpu_node["inputs"] = node["inputs"]
-        gpu_node["input_shapes"] = node["input_shapes"]
-        gpu_node["input_types"] = node["input_types"]
-        gpu_node["outputs"] = node["outputs"]
-        gpu_node["output_shapes"] = node["output_shapes"]
-        gpu_node["output_types"] = node["output_types"]
-    return gpu_nodes
+        copy_gpu_node["inputs"] = node["inputs"]
+        copy_gpu_node["input_shapes"] = node["input_shapes"]
+        copy_gpu_node["input_types"] = node["input_types"]
+        copy_gpu_node["outputs"] = node["outputs"]
+        copy_gpu_node["output_shapes"] = node["output_shapes"]
+        copy_gpu_node["output_types"] = node["output_types"]
+        new_gpu_nodes.append(copy_gpu_node)
+    return new_gpu_nodes
 
 
 def dump_et_file(et_enhanced_duration, et_enhanced_timestamp,
@@ -610,9 +651,9 @@ def dump_et_file(et_enhanced_duration, et_enhanced_timestamp,
         et = json.load(f)
 
         # assigned_ids: A dictionary mapping original ids to their corresponding unique ET ids.
-        # total_assigned_ids: A list containing all ET ids that have already been assigned.
+        # total_assigned_ids: A Dict containing all ET ids that have already been assigned.
         assigned_ids = {}
-        total_assigned_ids = []
+        total_assigned_ids = {}
 
         for node in et["nodes"]:
             # Meaning that it is kineto node.
