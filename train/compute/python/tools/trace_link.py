@@ -258,8 +258,9 @@ def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
     # The choice below normally does not matter for approximate match since we rely on the isomorphism of
     # the graphs, but for exact match we will use the execution order and then we should be careful
 
-    # Assume that an iteration ends with the specified annotation
+    # Assume that an iteration starts/ends with the specified annotation
     end_time = -1
+    add_last_chunk = False
     for op in kineto_et_ops:
         if end_time > 0 and get_timestamp_field(op) >= end_time:
             kineto_et_segs.append(kineto_et_seg)
@@ -269,9 +270,11 @@ def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
         if annotation in get_name_field(op):
             kineto_et_seg.append(op)
             end_time = get_timestamp_field(op) + get_duration_field(op)
+            add_last_chunk = True
         else:
             kineto_et_seg.append(op)
-
+    if add_last_chunk:
+        kineto_et_segs.append(kineto_et_seg)
     logger.info(f"Kineto trace has {len(kineto_et_segs)} segments")
 
     # In case of kineto only contains one iteration or the provided annotation is wrong, use the whole trace directly.
