@@ -260,7 +260,7 @@ def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
 
     # Assume that an iteration starts/ends with the specified annotation
     end_time = -1
-    add_last_chunk=False
+    add_last_chunk = False
     for op in kineto_et_ops:
         if end_time > 0 and get_timestamp_field(op) >= end_time:
             kineto_et_segs.append(kineto_et_seg)
@@ -270,7 +270,7 @@ def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
         if annotation in get_name_field(op):
             kineto_et_seg.append(op)
             end_time = get_timestamp_field(op) + get_duration_field(op)
-            add_last_chunk=True
+            add_last_chunk = True
         else:
             kineto_et_seg.append(op)
     if add_last_chunk:
@@ -335,12 +335,14 @@ def op_exists(name, kineto_et_ops, i):
 
     return False, kineto_et_ops[i]  # Return False and the op at index i if the name is not found.
 
-def find_op_shift(et_nodes,kineto_et_ops):
+def find_op_shift(et_nodes, kineto_et_ops):
     """
-    This function checks to see if the operations in Pytorch_et (et_nodes) and Kineto (kineto_et_ops) are shifter by
-    a constant number. Sometimes it is possible that the operation in index i of et_nodes is mapped to index i+shift in
-    kineto_et_ops. The objective of this function is to detect the shift value. To do this, this function picks N
-    (max_pattern_length) number of consecutive ops is et_nodes, and compare it with N consecutive ops in kineto_et_ops.
+    This function checks to see if the operations in Pytorch_et (et_nodes) and
+    Kineto (kineto_et_ops) are shifter by a constant number. Sometimes it is
+    possible that the operation in index i of et_nodes is mapped to index
+    i+shift in kineto_et_ops. The objective of this function is to detect the shift value.
+    To do this, this function picks N (max_pattern_length) number of consecutive
+    ops is et_nodes, and compare it with N consecutive ops in kineto_et_ops.
     The maximum shift amount to check is determined by the max_shift_to_check variable.
 
     Parameters:
@@ -351,18 +353,18 @@ def find_op_shift(et_nodes,kineto_et_ops):
     - The amount of shift between et_nodes and kineto_et_ops
     """
     # Number of consecutive ops to check
-    max_pattern_length=10
+    max_pattern_length = 10
     # Number of consecutive ops to check
-    max_shift_to_check=1000
+    max_shift_to_check = 1000
     # We pick the N consecutive ops starting from the index 5 in Pytorch_et
-    start_index=5
+    start_index = 5
     for shift in range(max_shift_to_check):
-        pattern_match=True
+        pattern_match = True
         for index in range(max_pattern_length):
-            if start_index+index>=len(et_nodes) or start_index+index+shift>=len(kineto_et_ops):
+            if start_index + index >= len(et_nodes) or start_index + index + shift >= len(kineto_et_ops):
                 return 0
-            if et_nodes[start_index+index].name!=kineto_et_ops[start_index+index+shift]["name"]:
-                pattern_match=False
+            if et_nodes[start_index + index].name != kineto_et_ops[start_index + index + shift]["name"]:
+                pattern_match = False
                 break
         if pattern_match:
             return shift
@@ -430,15 +432,15 @@ def exact_match(kineto_et_ops, kineto_ac2g_s_ops, kineto_ac2g_f_ops,
             kineto_gpu_ops_per_cpu_op_idx[parent_cpu_op["args"]["Ev Idx"]]=[gpu_op]
         else:
             kineto_gpu_ops_per_cpu_op_idx[parent_cpu_op["args"]["Ev Idx"]].append(gpu_op)
-    shift=find_op_shift(et_nodes,kineto_et_ops)
+    shift = find_op_shift(et_nodes, kineto_et_ops)
     if shift:
-        logger.info("shift found between et_nodes, and kineto_et_events. Shift amount: "+str(shift))
+        logger.info("shift found between et_nodes, and kineto_et_events. Shift amount: " + str(shift))
     # Link kineto trace and execution trace
-    if len(kineto_et_ops) == len(et_nodes):
+    if len(kineto_et_ops) >= len(et_nodes):
         for i in range(len(et_nodes)):
             et_node = et_nodes[i]
 
-            name_exist, kineto_et_op = op_exists(et_node.name, kineto_et_ops, i+shift)
+            name_exist, kineto_et_op = op_exists(et_node.name, kineto_et_ops, i + shift)
 
             if (name_exist or
                 ("iteration#" in et_node.name and "iteration#" in get_name_field(kineto_et_op)) or
@@ -603,10 +605,11 @@ def assign_et_ids(total_assigned_ids, assigned_ids, id):
         if id in total_assigned_ids.keys():
             id += 1
         else:
-            total_assigned_ids[id]=True
+            total_assigned_ids[id] = True
             if orig_id not in assigned_ids.keys():
                 assigned_ids[orig_id] = id
             return id
+
 
 def update_gpu_nodes(et_gpu_ops_per_cpu_op_id, node, total_assigned_ids,
                      assigned_ids, orig_node_id):
@@ -615,11 +618,11 @@ def update_gpu_nodes(et_gpu_ops_per_cpu_op_id, node, total_assigned_ids,
     and assign unique IDs.
     """
     gpu_nodes = sorted(et_gpu_ops_per_cpu_op_id[orig_node_id], key=lambda kv: get_timestamp_field(kv))
-    new_gpu_nodes=[]
+    new_gpu_nodes = []
 
     # Assign the gpu_node's parent with cpu_node
     for gpu_node in gpu_nodes:
-        copy_gpu_node=copy.deepcopy(gpu_node)
+        copy_gpu_node = copy.deepcopy(gpu_node)
         copy_gpu_node["parent"] = node["id"]
         copy_gpu_node["id"] = assign_et_ids(total_assigned_ids,
                                        assigned_ids, orig_node_id)
@@ -654,7 +657,6 @@ def dump_et_file(et_enhanced_duration, et_enhanced_timestamp,
         # total_assigned_ids: A Dict containing all ET ids that have already been assigned.
         assigned_ids = {}
         total_assigned_ids = {}
-
         for node in et["nodes"]:
             # Meaning that it is kineto node.
             if has_category_field(node.keys()):

@@ -23,8 +23,8 @@ logging.basicConfig(format=FORMAT)
 logging.getLogger().setLevel(logging.INFO)
 
 PROFILER_STEP_ANNOTATION: str = "ProfilerStep"
-EXECUTION_TRACE_PROCESS_ANNOTATION = "[pytorch|profiler|execution_trace|process]"
-EXECUTION_TRACE_THREAD_ANNOTATION = "[pytorch|profiler|execution_trace|thread]"
+EXECUTION_TRACE_PROCESS_ANNOTATION = "[pytorch|profiler|execution_graph|process]"
+EXECUTION_TRACE_THREAD_ANNOTATION = "[pytorch|profiler|execution_graph|thread]"
 
 # OPERATOR: nodes actually does something
 # LABEL: nodes used as markers
