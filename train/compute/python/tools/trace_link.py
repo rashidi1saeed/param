@@ -84,7 +84,7 @@ def find_closest_segment(segs, target_length):
 
 def has_category_field(op_dict):
     """
-        All kineto node has category field.
+    All kineto node has category field.
     """
     if "cat" in op_dict:
         return True
@@ -128,7 +128,7 @@ def get_timestamp_field(op_dict):
 
 def find_closest_op(ops, ts):
     """
-        Finds the operation that is closest in duration to a given timestamp.
+    Finds the operation that is closest in duration to a given timestamp.
     """
     closest_start = 0
     closest_op = {}
@@ -146,8 +146,8 @@ def find_closest_op(ops, ts):
 def find_parent_cpu_op(kineto_gpu_op, kineto_et_ops, kineto_ac2g_s_ops,
                        kineto_ac2g_f_ops, kineto_cpu_launcher_ops):
     """
-        Find the parent CPU operation for a given GPU operation based on
-        the closest start time and duration that covers the GPU operation.
+    Find the parent CPU operation for a given GPU operation based on
+    the closest start time and duration that covers the GPU operation.
     """
     ts = -1
     method = ""
@@ -186,7 +186,7 @@ def find_parent_cpu_op(kineto_gpu_op, kineto_et_ops, kineto_ac2g_s_ops,
 
 def trace_analysis(et_file, kineto_file, annotation="DataLoader"):
     """
-        Extract operator info from raw traces
+    Extract operator info from raw traces
     """
     et = load_execution_trace_file(et_file)
     et.set_iterations(annotation)
@@ -657,6 +657,7 @@ def dump_et_file(et_enhanced_duration, et_enhanced_timestamp,
         # total_assigned_ids: A Dict containing all ET ids that have already been assigned.
         assigned_ids = {}
         total_assigned_ids = {}
+
         for node in et["nodes"]:
             # Meaning that it is kineto node.
             if has_category_field(node.keys()):
